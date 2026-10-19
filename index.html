@@ -84,10 +84,10 @@
   </header>
 
   <nav class="nav-tabs">
-    <button class="tab-btn active" onclick="switchTab('tab1')">1. Mô Hình Unicast, Broadcast & Multicast</button>
-    <button class="tab-btn" onclick="switchTab('tab2')">2. Cơ chế Public MQTT Broker</button>
-    <button class="tab-btn" onclick="switchTab('tab3')">3. Phòng Lab: Whiteboard Phân Tán</button>
-    <button class="tab-btn" onclick="switchTab('tab4')">4. Phân Tích Gói Tin Bằng Wireshark</button>
+    <button class="tab-btn active" onclick="switchTab('tab1', this)">1. Mô Hình Unicast, Broadcast & Multicast</button>
+    <button class="tab-btn" onclick="switchTab('tab2', this)">2. Cơ chế Public MQTT Broker</button>
+    <button class="tab-btn" onclick="switchTab('tab3', this)">3. Phòng Lab: Whiteboard Phân Tán</button>
+    <button class="tab-btn" onclick="switchTab('tab4', this)">4. Phân Tích Gói Tin Bằng Wireshark</button>
   </nav>
 
   <main>
@@ -205,7 +205,11 @@
         .swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; }
         .swatch.active { border-color: #fff; transform: scale(1.15); }
         #colorInput { width: 34px; height: 30px; border: none; background: none; padding: 0; cursor: pointer; }
-        .board-wrap { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #fff; border-radius: 6px; overflow: hidden; }
+        .board-wrap { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #fff; border-radius: 6px; overflow: hidden; transition: width .15s ease; }
+        #boardWrap.zoomed { max-width: none; }
+        .canvas-container:has(#boardWrap) { overflow-x: auto; overflow-y: visible; }
+        .board-wrap.expanded { position: fixed; z-index: 9999; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(94vw, 163.55vh); max-width: 94vw; aspect-ratio: 16 / 9; box-shadow: 0 0 0 100vmax rgba(2, 6, 23, .78), 0 18px 60px rgba(0,0,0,.45); border: 2px solid var(--accent-blue); }
+        .board-wrap.expanded::after { content: 'Nhấn “Thu nhỏ khung” để quay lại'; position: absolute; right: 8px; top: 8px; z-index: 2; pointer-events: none; background: rgba(15,23,42,.85); color: white; padding: 5px 8px; border-radius: 5px; font-size: 12px; }
         .board-wrap canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
         #whiteboard { cursor: crosshair; touch-action: none; }
         #whiteboard.locked { cursor: not-allowed; }
@@ -218,6 +222,10 @@
 
       <!-- SẢNH: tạo phòng / vào phòng -->
       <div id="lobby">
+        <div class="card" style="border-color: var(--accent-blue);">
+          <div class="card-title"><span>🖼 Cách thêm ảnh vào bảng vẽ</span></div>
+          <p class="theory-text" style="margin-bottom: 0;">Nút <b>🖼 Thêm ảnh</b> chỉ xuất hiện sau khi bạn tạo phòng mới hoặc vào phòng bằng link mời. Sau khi vào phòng, tìm nút này trên thanh công cụ ngay phía trên bảng vẽ, cạnh “Xóa nét của tôi” và “Lưu PNG”.</p>
+        </div>
         <div class="card">
           <div class="card-title"><span>Tên hiển thị của bạn</span></div>
           <input id="nameInput" class="field" maxlength="20" placeholder="Ví dụ: Minh">
@@ -305,6 +313,8 @@
               <button class="tbtn" data-tool="line">╱ Đường thẳng</button>
               <button class="tbtn" data-tool="rect">▭ Chữ nhật</button>
               <button class="tbtn" data-tool="ellipse">◯ Elip</button>
+              <button class="tbtn" data-tool="text" title="Chọn rồi nhấp vào bảng để nhập chữ">🔤 Thêm chữ</button>
+              <label style="font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.3rem;">Cỡ chữ <select id="textSize" class="field" style="width: 76px; margin: 0; padding: 0.25rem;"><option value="16">16</option><option value="20">20</option><option value="24" selected>24</option><option value="32">32</option><option value="40">40</option><option value="48">48</option><option value="64">64</option></select>px</label>
               <label style="font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.3rem;">
                 <input type="checkbox" id="fillChk"> Tô đặc hình
               </label>
@@ -323,6 +333,10 @@
               <button class="tbtn" id="redoBtn" title="Ctrl+Y">↷ Làm lại</button>
               <button class="tbtn" id="clearMineBtn">🗑 Xóa nét của tôi</button>
               <button class="tbtn" id="addImgBtn" title="Hoặc kéo-thả / dán ảnh (Ctrl+V) vào bảng">🖼 Thêm ảnh</button>
+              <button class="tbtn" id="expandBoardBtn" title="Phóng bảng vẽ ra gần toàn màn hình">⛶ Phóng lớn</button>
+              <button class="tbtn" id="zoomInBoardBtn" title="Tăng kích thước bảng vẽ">＋ Phóng to</button>
+              <button class="tbtn" id="zoomOutBoardBtn" title="Giảm kích thước bảng vẽ">－ Thu nhỏ</button>
+              <button class="tbtn" id="resetBoardSizeBtn" title="Trở về kích thước mặc định">↺ Mặc định</button>
               <button class="tbtn" id="savePngBtn">💾 Lưu PNG</button>
               <input type="file" id="imgFile" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
             </div>
@@ -394,11 +408,11 @@
 
   <script>
     // --- TAB SWITCHING ---
-    function switchTab(tabId) {
+    function switchTab(tabId, clickedButton) {
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
       document.getElementById(tabId).classList.add('active');
-      event.currentTarget.classList.add('active');
+      (clickedButton || document.querySelector('.tab-btn[onclick*="' + tabId + '"]'))?.classList.add('active');
 
       if (tabId === 'tab1') {
         startUnicastAnim();
@@ -617,7 +631,7 @@
     const IMG_RE = /^data:image\/(png|jpeg);base64,[A-Za-z0-9+\/=]+$/;
     const MAX_IMG = 30, IMG_CHUNK = 40000, IMG_MAX_LEN = 700000;
 
-    const TOOLS = ['pen', 'eraser', 'line', 'rect', 'ellipse'];
+    const TOOLS = ['pen', 'eraser', 'line', 'rect', 'ellipse', 'text'];
     const isFree = t => t === 'pen' || t === 'eraser';
     const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -672,8 +686,18 @@
       const [x1, y1, x2, y2] = st.box;
       c.drawImage(el, Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
     }
+    function drawText(c, st) {
+      if (typeof st.text !== 'string' || !st.text) return;
+      c.save(); c.fillStyle = st.color; c.textBaseline = 'top';
+      c.font = `${Math.max(10, Math.min(96, Number(st.fontSize) || 24))}px Arial, sans-serif`;
+      const lines = st.text.split('\n').slice(0, 30);
+      const lineHeight = Math.max(12, (Number(st.fontSize) || 24) * 1.25);
+      lines.forEach((line, i) => c.fillText(line.slice(0, 500), st.box[0], st.box[1] + i * lineHeight, W - st.box[0] - 8));
+      c.restore();
+    }
     function drawStroke(c, st) {
       if (st.tool === 'image') drawImg(c, st);
+      else if (st.tool === 'text') drawText(c, st);
       else if (isFree(st.tool)) drawPath(c, st);
       else drawShape(c, st);
     }
@@ -721,7 +745,11 @@
         color: COLOR_RE.test(st.color) ? st.color : '#000000',
         size: Math.max(1, Math.min(40, +st.size || 4)), fill: !!st.fill, pts: [], box: [0, 0, 0, 0]
       };
-      if (isFree(st.tool)) {
+      if (st.tool === 'text') {
+        if (typeof st.text !== 'string' || !st.text.trim()) return null;
+        o.text = st.text.slice(0, 5000); o.fontSize = Math.max(10, Math.min(96, Number(st.fontSize) || 24));
+        if (Array.isArray(st.box) && st.box.length === 4) o.box = st.box.map(num);
+      } else if (isFree(st.tool)) {
         (Array.isArray(st.pts) ? st.pts : []).slice(0, 20000).forEach(p => { if (Array.isArray(p)) o.pts.push([num(p[0]), num(p[1])]); });
       } else if (Array.isArray(st.box) && st.box.length === 4) o.box = st.box.map(num);
       return o;
@@ -788,7 +816,7 @@
       const imgs = [];
       strokes.forEach(st => {
         if (st.tool === 'image') { imgs.push(st); return; }
-        const len = st.pts.length * 12 + 120;
+        const len = (st.pts ? st.pts.length * 12 : 0) + (st.text ? st.text.length * 2 : 0) + 120;
         if (size + len > 60000) flush();
         chunk.push(st); size += len;
       });
@@ -1082,6 +1110,12 @@
       if (pend) { pendDown(e); return; }
       canvas.setPointerCapture(e.pointerId);
       const pt = pos(e);
+      if (tool === 'text') {
+        const value = prompt('Nhập nội dung chữ (có thể xuống dòng):');
+        if (value === null || !value.trim()) return;
+        const st = { id: myId + '-txt-' + (++seq).toString(36) + '-' + Date.now().toString(36), owner: myId, tool: 'text', color, size: 1, fill: false, pts: [], box: [pt[0], pt[1], pt[0], pt[1]], text: value.slice(0, 5000), fontSize: Number($('textSize').value) || 24 };
+        addStroke(st); redo = []; mine.push(st.id); drawText(ctx, st); send({ t: 'stroke', st }); updateButtons(); return;
+      }
       cur = {
         id: myId + '-' + (++seq).toString(36) + '-' + Date.now().toString(36), owner: myId, tool,
         color: tool === 'eraser' ? '#ffffff' : color,
@@ -1289,6 +1323,47 @@
     $('colorInput').oninput = e => setColor(e.target.value);
 
     $('addImgBtn').onclick = () => $('imgFile').click();
+    // Điều chỉnh kích thước hiển thị bảng vẽ; không thay đổi dữ liệu/nét vẽ.
+    let boardZoom = 1;
+    function applyBoardSize() {
+      const wrap = $('boardWrap');
+      const expanded = wrap.classList.contains('expanded');
+      wrap.style.width = expanded ? '' : (boardZoom === 1 ? '100%' : (boardZoom * 100) + '%');
+      wrap.classList.toggle('zoomed', boardZoom !== 1 && !expanded);
+      $('expandBoardBtn').textContent = expanded ? '⤢ Thu nhỏ khung' : '⛶ Phóng lớn';
+      $('zoomOutBoardBtn').disabled = boardZoom <= 1;
+      $('zoomInBoardBtn').disabled = boardZoom >= 1.75;
+    }
+    $('expandBoardBtn').onclick = () => {
+      const wrap = $('boardWrap');
+      const expanded = wrap.classList.toggle('expanded');
+      if (expanded) { wrap.style.width = ''; }
+      else { boardZoom = 1; }
+      applyBoardSize();
+    };
+    $('zoomInBoardBtn').onclick = () => {
+      if (boardZoom < 1.75) boardZoom = Math.min(1.75, +(boardZoom + 0.25).toFixed(2));
+      $('boardWrap').classList.remove('expanded');
+      applyBoardSize();
+    };
+    $('zoomOutBoardBtn').onclick = () => {
+      if (boardZoom > 1) boardZoom = Math.max(1, +(boardZoom - 0.25).toFixed(2));
+      $('boardWrap').classList.remove('expanded');
+      applyBoardSize();
+    };
+    $('resetBoardSizeBtn').onclick = () => {
+      boardZoom = 1;
+      $('boardWrap').classList.remove('expanded');
+      applyBoardSize();
+    };
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape' && $('boardWrap').classList.contains('expanded')) {
+        $('boardWrap').classList.remove('expanded');
+        boardZoom = 1;
+        applyBoardSize();
+      }
+    });
+    applyBoardSize();
     $('imgFile').onchange = e => { loadImageFile(e.target.files[0]); e.target.value = ''; };
     $('confirmImgBtn').onclick = confirmPend;
     $('cancelImgBtn').onclick = cancelPend;
