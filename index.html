@@ -213,6 +213,7 @@
         .banner { display: none; background: rgba(245, 158, 11, 0.15); border: 1px solid var(--accent-amber); color: var(--accent-amber); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.85rem; margin-bottom: 0.75rem; }
         .kick { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); border: none; border-radius: 4px; padding: 0.15rem 0.5rem; font-size: 0.7rem; font-weight: 600; cursor: pointer; }
         .member-right { display: flex; gap: 0.4rem; align-items: center; }
+        .pendbar { display: none; align-items: center; gap: 0.5rem; flex-wrap: wrap; background: rgba(56, 189, 248, 0.12); border: 1px solid var(--accent-blue); color: var(--accent-blue); border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.85rem; margin-bottom: 0.75rem; }
       </style>
 
       <!-- SẢNH: tạo phòng / vào phòng -->
@@ -321,13 +322,20 @@
               <button class="tbtn" id="undoBtn" title="Ctrl+Z">↶ Hoàn tác</button>
               <button class="tbtn" id="redoBtn" title="Ctrl+Y">↷ Làm lại</button>
               <button class="tbtn" id="clearMineBtn">🗑 Xóa nét của tôi</button>
+              <button class="tbtn" id="addImgBtn" title="Hoặc kéo-thả / dán ảnh (Ctrl+V) vào bảng">🖼 Thêm ảnh</button>
               <button class="tbtn" id="savePngBtn">💾 Lưu PNG</button>
+              <input type="file" id="imgFile" accept="image/png,image/jpeg,image/webp,image/gif,image/bmp" hidden>
             </div>
 
+            <div class="pendbar" id="pendBar">
+              <span>Kéo ảnh để di chuyển, kéo ô vuông ở góc để đổi cỡ.</span>
+              <button class="tbtn active" id="confirmImgBtn">✔ Đặt ảnh (Enter)</button>
+              <button class="tbtn" id="cancelImgBtn">✖ Hủy (Esc)</button>
+            </div>
             <div class="banner" id="lockBanner">🔒 Chủ phòng đã khóa bảng. Bạn chỉ xem được, chưa vẽ được.</div>
 
             <div class="canvas-container" style="margin-bottom: 0;">
-              <div class="board-wrap">
+              <div class="board-wrap" id="boardWrap">
                 <canvas id="whiteboard"></canvas>
                 <canvas id="preview"></canvas>
               </div>
@@ -604,6 +612,10 @@
     let cur = null, pending = [], flushTimer = null, seq = 0;
     let hbTimer = null, sweepTimer = null, lastTs = 0;
     let sendQ = Promise.resolve(), rxQ = Promise.resolve();
+    let pend = null, pendDrag = null;            // ảnh đang đặt (chưa gửi)
+    const imgBuf = new Map();                    // ảnh đang nhận theo từng mảnh
+    const IMG_RE = /^data:image\/(png|jpeg);base64,[A-Za-z0-9+\/=]+$/;
+    const MAX_IMG = 30, IMG_CHUNK = 40000, IMG_MAX_LEN = 700000;
 
     const TOOLS = ['pen', 'eraser', 'line', 'rect', 'ellipse'];
     const isFree = t => t === 'pen' || t === 'eraser';
@@ -654,7 +666,17 @@
         st.fill ? c.fill() : c.stroke();
       }
     }
-    function drawStroke(c, st) { isFree(st.tool) ? drawPath(c, st) : drawShape(c, st); }
+    function drawImg(c, st) {
+      const el = st.el;
+      if (!el || !el.complete || !el.naturalWidth) return;
+      const [x1, y1, x2, y2] = st.box;
+      c.drawImage(el, Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    }
+    function drawStroke(c, st) {
+      if (st.tool === 'image') drawImg(c, st);
+      else if (isFree(st.tool)) drawPath(c, st);
+      else drawShape(c, st);
+    }
     // Vẽ thêm đoạn cuối khi nét đang được kéo (nhanh, không cần vẽ lại cả bảng)
     function drawTail(st) {
       const p = st.pts, n = p.length;
@@ -668,9 +690,11 @@
       }
       ctx.stroke();
     }
+    // Ảnh luôn nằm dưới nét vẽ, nên thứ tự hiển thị giống nhau trên mọi máy dù ảnh tới sớm hay muộn
     function redrawAll() {
       ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
-      strokes.forEach(st => drawStroke(ctx, st));
+      strokes.forEach(st => { if (st.tool === 'image') drawImg(ctx, st); });
+      strokes.forEach(st => { if (st.tool !== 'image') drawStroke(ctx, st); });
     }
     function addStroke(st) {
       if (byId.has(st.id)) return false;
@@ -761,12 +785,15 @@
     function sendSync() {
       let chunk = [], size = 0;
       const flush = () => { if (chunk.length) send({ t: 'sync', strokes: chunk }); chunk = []; size = 0; };
+      const imgs = [];
       strokes.forEach(st => {
+        if (st.tool === 'image') { imgs.push(st); return; }
         const len = st.pts.length * 12 + 120;
         if (size + len > 60000) flush();
         chunk.push(st); size += len;
       });
       flush();
+      imgs.forEach(sendImage);
     }
 
     async function onPayload(str) {
@@ -781,6 +808,25 @@
     }
 
     const allowed = s => !locked || s === hostId;
+
+    function imageCount() { return strokes.reduce((n, st) => n + (st.tool === 'image' ? 1 : 0), 0); }
+    function sendImage(st) {
+      const n = Math.ceil(st.src.length / IMG_CHUNK);
+      for (let i = 0; i < n; i++) {
+        const body = { t: 'img', id: st.id, i, n, d: st.src.slice(i * IMG_CHUNK, (i + 1) * IMG_CHUNK) };
+        if (i === 0) body.box = st.box;
+        send(body);
+      }
+    }
+    function addRemoteImage(id, owner, box, src) {
+      if (src.length > IMG_MAX_LEN + 1000 || !IMG_RE.test(src) || imageCount() >= MAX_IMG) return;
+      const st = { id: id.slice(0, 60), owner: String(owner).slice(0, 20), tool: 'image', color: '#000000', size: 1, fill: false, pts: [], box, src, el: null };
+      if (!addStroke(st)) return;
+      const el = new Image();
+      el.onload = () => { st.el = el; redrawAll(); };
+      el.src = src;
+      logNet(`${nameOf(st.owner)} đã thêm một ảnh`);
+    }
 
     function handle(b, ver) {
       const s = b.s;
@@ -832,6 +878,31 @@
           strokes = []; byId.clear(); mine = []; redo = [];
           redrawAll(); updateButtons(); logNet('Chủ phòng đã xóa sạch bảng');
           break;
+        case 'img': {
+          if (!allowed(s) || typeof b.id !== 'string' || typeof b.d !== 'string' || b.d.length > IMG_CHUNK + 100) return;
+          if (!(b.n >= 1 && b.n <= 40) || !(b.i >= 0 && b.i < b.n) || byId.has(b.id)) return;
+          let buf = imgBuf.get(b.id);
+          if (!buf) {
+            if (imgBuf.size >= 6) return;
+            buf = { n: b.n, parts: new Array(b.n), got: 0, owner: s, box: null };
+            imgBuf.set(b.id, buf);
+            // thiếu mảnh sau 10 giây thì xin gửi lại
+            buf.timer = setTimeout(() => { if (imgBuf.get(b.id) === buf) { imgBuf.delete(b.id); send({ t: 'needimg', id: b.id }); } }, 10000);
+          }
+          if (b.n !== buf.n) return;
+          if (!buf.parts[b.i]) { buf.parts[b.i] = b.d; buf.got++; }
+          if (b.i === 0 && Array.isArray(b.box) && b.box.length === 4) buf.box = b.box.map(num);
+          if (buf.got === buf.n && buf.box) {
+            clearTimeout(buf.timer); imgBuf.delete(b.id);
+            addRemoteImage(b.id, buf.owner, buf.box, buf.parts.join(''));
+          }
+          break;
+        }
+        case 'needimg': {
+          const st = byId.get(b.id);
+          if (st && st.tool === 'image' && (isHost || st.owner === myId)) sendImage(st);
+          break;
+        }
         case 'need':
           if (isHost) { sendHi(); sendSync(); }   // báo ngay vai trò chủ phòng + trạng thái khóa cho người mới vào
           break;
@@ -904,6 +975,8 @@
       $('undoBtn').disabled = !ok || !mine.length;
       $('redoBtn').disabled = !ok || !redo.length;
       $('clearMineBtn').disabled = !ok;
+      $('addImgBtn').disabled = !ok;
+      if (!ok && pend) cancelPend();
     }
     function kick(id) {
       if (!isHost) return;
@@ -922,7 +995,9 @@
       strokes = []; byId.clear(); members.clear(); hostId = null; locked = false;
       banned = new Set(); lastHostTs = 0; seenClear.clear(); mine = []; redo = [];
       kickedFlag = false; cur = null; pending = [];
-      pctx.clearRect(0, 0, W, H); redrawAll();
+      pend = null; pendDrag = null;
+      imgBuf.forEach(x => clearTimeout(x.timer)); imgBuf.clear();
+      pctx.clearRect(0, 0, W, H); redrawAll(); updatePendUI();
       $('netLogs').innerHTML = '';
     }
     async function enterRoom(r, name) {
@@ -1004,6 +1079,7 @@
       if (!canDraw()) return;
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       e.preventDefault();
+      if (pend) { pendDown(e); return; }
       canvas.setPointerCapture(e.pointerId);
       const pt = pos(e);
       cur = {
@@ -1017,6 +1093,7 @@
       updateButtons();
     });
     canvas.addEventListener('pointermove', e => {
+      if (pendDrag) { e.preventDefault(); pendMove(e); return; }
       if (!cur) return;
       e.preventDefault();
       const co = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
@@ -1033,6 +1110,7 @@
       else { pctx.clearRect(0, 0, W, H); drawShape(pctx, cur); }
     });
     function endDraw() {
+      if (pendDrag) { pendDrag = null; return; }
       if (!cur) return;
       if (isFree(cur.tool)) {
         clearTimeout(flushTimer); flushPts();
@@ -1051,6 +1129,91 @@
     canvas.addEventListener('pointerup', endDraw);
     canvas.addEventListener('pointercancel', endDraw);
 
+    // ----- Thêm ảnh: chọn, nén, đặt vị trí rồi mới gửi -----
+    function loadImg(src) {
+      return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src; });
+    }
+    function encodeImage(img, scale) {
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0, c.width, c.height);
+      let out = c.toDataURL('image/png');          // giữ nền trong suốt nếu ảnh nhỏ
+      if (out.length > 200000) {                    // ảnh lớn: chuyển JPEG, nền trong suốt thành trắng
+        g.globalCompositeOperation = 'destination-over';
+        g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height);
+        out = c.toDataURL('image/jpeg', 0.82);
+      }
+      return out;
+    }
+    function hs() { return 18 * W / canvas.getBoundingClientRect().width; }   // ô kéo giãn cỡ ~18px trên màn hình
+    function drawPend() {
+      pctx.clearRect(0, 0, W, H);
+      if (!pend) return;
+      pctx.drawImage(pend.el, pend.x, pend.y, pend.w, pend.h);
+      const h = hs();
+      pctx.save();
+      pctx.setLineDash([10, 6]); pctx.lineWidth = 3; pctx.strokeStyle = '#38bdf8';
+      pctx.strokeRect(pend.x, pend.y, pend.w, pend.h);
+      pctx.setLineDash([]); pctx.fillStyle = '#38bdf8';
+      pctx.fillRect(pend.x + pend.w - h, pend.y + pend.h - h, h * 2, h * 2);
+      pctx.restore();
+    }
+    function updatePendUI() {
+      $('pendBar').style.display = pend ? 'flex' : 'none';
+      if (!pend) pctx.clearRect(0, 0, W, H);
+    }
+    function pendDown(e) {
+      const p = pos(e), h = hs();
+      if (Math.abs(p[0] - (pend.x + pend.w)) <= h * 1.5 && Math.abs(p[1] - (pend.y + pend.h)) <= h * 1.5) pendDrag = { mode: 'resize' };
+      else if (p[0] >= pend.x && p[0] <= pend.x + pend.w && p[1] >= pend.y && p[1] <= pend.y + pend.h) pendDrag = { mode: 'move', dx: p[0] - pend.x, dy: p[1] - pend.y };
+      else return;
+      canvas.setPointerCapture(e.pointerId);
+    }
+    function pendMove(e) {
+      const p = pos(e);
+      if (pendDrag.mode === 'move') {
+        pend.x = Math.max(-pend.w + 60, Math.min(W - 60, p[0] - pendDrag.dx));
+        pend.y = Math.max(-pend.h + 60, Math.min(H - 60, p[1] - pendDrag.dy));
+      } else {
+        pend.w = Math.max(40, Math.min(W * 2, p[0] - pend.x));
+        pend.h = pend.w * pend.ratio;
+      }
+      drawPend();
+    }
+    function cancelPend() { pend = null; pendDrag = null; updatePendUI(); }
+    function confirmPend() {
+      if (!pend || !canDraw()) return;
+      const st = {
+        id: myId + '-img' + (++seq).toString(36) + '-' + Date.now().toString(36), owner: myId, tool: 'image',
+        color: '#000000', size: 1, fill: false, pts: [],
+        box: [pend.x, pend.y, pend.x + pend.w, pend.y + pend.h].map(Math.round), src: pend.src, el: pend.el
+      };
+      addStroke(st); redo = []; mine.push(st.id);
+      pend = null; pendDrag = null; updatePendUI(); redrawAll();
+      sendImage(st); logNet('Bạn đã thêm một ảnh'); updateButtons();
+    }
+    async function loadImageFile(file) {
+      if (!file || !canDraw()) return;
+      if (!/^image\/(png|jpe?g|webp|gif|bmp)$/.test(file.type)) return alert('Chỉ hỗ trợ ảnh PNG, JPG, WebP, GIF, BMP.');
+      if (imageCount() >= MAX_IMG) return alert('Bảng đã có tối đa ' + MAX_IMG + ' ảnh.');
+      if (file.size > 25e6) return alert('Ảnh quá lớn (tối đa 25MB).');
+      const url = URL.createObjectURL(file);
+      let img;
+      try { img = await loadImg(url); }
+      catch (e) { URL.revokeObjectURL(url); return alert('Không đọc được ảnh này.'); }
+      URL.revokeObjectURL(url);
+      let scale = Math.min(1, 1280 / Math.max(img.naturalWidth, img.naturalHeight)), src = '';
+      for (let i = 0; i < 6; i++) { src = encodeImage(img, scale); if (src.length <= IMG_MAX_LEN) break; scale *= 0.8; }
+      if (src.length > IMG_MAX_LEN) return alert('Không nén được ảnh xuống dung lượng đủ nhỏ để gửi.');
+      const el = await loadImg(src);
+      const fit = Math.min(1, 0.7 * W / el.naturalWidth, 0.7 * H / el.naturalHeight);
+      const w = el.naturalWidth * fit, h = el.naturalHeight * fit;
+      pend = { el, src, x: (W - w) / 2, y: (H - h) / 2, w, h, ratio: h / w };
+      updatePendUI(); drawPend();
+    }
+
     // ----- Nút chức năng -----
     function undo() {
       if (!canDraw()) return;
@@ -1062,7 +1225,11 @@
     function redoStroke() {
       if (!canDraw()) return;
       const st = redo.pop(); if (!st) return;
-      if (addStroke(st)) { mine.push(st.id); drawStroke(ctx, st); send({ t: 'stroke', st }); }
+      if (addStroke(st)) {
+        mine.push(st.id);
+        if (st.tool === 'image') { redrawAll(); sendImage(st); }
+        else { drawStroke(ctx, st); send({ t: 'stroke', st }); }
+      }
       updateButtons();
     }
     function clearMine() {
@@ -1121,9 +1288,28 @@
     });
     $('colorInput').oninput = e => setColor(e.target.value);
 
+    $('addImgBtn').onclick = () => $('imgFile').click();
+    $('imgFile').onchange = e => { loadImageFile(e.target.files[0]); e.target.value = ''; };
+    $('confirmImgBtn').onclick = confirmPend;
+    $('cancelImgBtn').onclick = cancelPend;
+    $('boardWrap').addEventListener('dragover', e => e.preventDefault());
+    $('boardWrap').addEventListener('drop', e => {
+      e.preventDefault();
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) loadImageFile(f);
+    });
+    document.addEventListener('paste', e => {
+      if (!room || !$('tab3').classList.contains('active')) return;
+      if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+      const it = Array.from((e.clipboardData && e.clipboardData.items) || []).find(x => x.kind === 'file' && x.type.startsWith('image/'));
+      if (it) { e.preventDefault(); loadImageFile(it.getAsFile()); }
+    });
+
     document.addEventListener('keydown', e => {
       if (!room || !$('tab3').classList.contains('active')) return;
       if (/^(INPUT|TEXTAREA)$/.test(e.target.tagName) && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
+      if (pend && e.key === 'Enter') { e.preventDefault(); confirmPend(); return; }
+      if (pend && e.key === 'Escape') { cancelPend(); return; }
       if (!(e.ctrlKey || e.metaKey)) return;
       const k = e.key.toLowerCase();
       if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
